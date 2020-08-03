@@ -1,0 +1,13 @@
+CREATE TABLE sessions (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  heartbeated_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE items (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  claim UUID REFERENCES sessions (id) ON DELETE SET NULL,
+  added_at TIMESTAMPTZ NOT NULL,
+  payload BYTES NOT NULL,
+  attempt INT NOT NULL,
+  num_retries INT NOT NULL
+);
