@@ -101,7 +101,7 @@ func (this *Worker) generateMutateTransaction(id uuid.UUID) func(*sql.Tx, error)
 func (this *Worker) startWork() {
 	payload := []byte{}
 	id := uuid.UUID{}
-	err := this.db.QueryRow("UPDATE items SET claim = $1 WHERE claim IS NULL ORDER BY added_at ASC LIMIT 1 RETURNING payload, id").Scan(&payload, &id)
+	err := this.db.QueryRow("UPDATE items SET claim = $1 WHERE claim IS NULL ORDER BY added_at ASC LIMIT 1 RETURNING payload, id", this.uuid).Scan(&payload, &id)
 	if err != nil {
 		return
 	}
@@ -127,7 +127,7 @@ func (this *Worker) heartbeat() {
 	this.db.Exec("UPDATE sessions SET heartbeated_at = now() WHERE id = $1", this.uuid)
 
 	// Delete expired sessions
-	this.db.Exec("DELETE FROM sessions WHERE heartbeated_at < now() - $1", this.options.Deadline)
+	this.db.Exec("DELETE FROM sessions WHERE (now() - heartbeated_at) > $1", this.options.Deadline.Seconds())
 }
 
 func (this *Worker) cleanUpSession() {
