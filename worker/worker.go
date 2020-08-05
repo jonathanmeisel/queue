@@ -13,8 +13,8 @@ import (
 )
 
 type Worker struct {
-	uuid     uuid.UUID                                                 // session UUID for this worker
-	callback func(context.Context, []byte, func(*sql.Tx, error) error) // callback function to perform work
+	uuid     uuid.UUID                                                // session UUID for this worker
+	callback func(context.Context, []byte, func(*sql.Tx) error) Error // callback function to perform work
 	options  *Options
 
 	workerDone    chan bool // channel used to signal this worker has been closed
@@ -66,24 +66,10 @@ func (this *Options) WithDeadline(duration time.Duration) *Options {
 	return this
 }
 
-func (this *Worker) generateMutateTransaction(id uuid.UUID) func(*sql.Tx, error) error {
-	return func(tx *sql.Tx, err error) error {
-		// Delete it from the queue
-		if err != nil {
-			// Retry
-			attempts, numRetries := 0, 0
-			err = this.db.QueryRow("UPDATE items SET (added_at, attempts) = (NOW(), attempts + 1) WHERE id = $1 AND claim = $2 LIMIT 1 RETURNING attempts, num_retries").Scan(&attempts, &numRetries)
-			if err != nil {
-				return err
-			}
-			// It's enqueued for later
-			if attempts < numRetries {
-				return nil
-			}
-		}
-
-		// Delete from the queue
-		results, err := this.db.Exec("DELETE FROM items WHERE id = $1 and claim = $2", id, this.uuid)
+func (this *Worker) generateMutateTransaction(id uuid.UUID) func(*sql.Tx) error {
+	return func(tx *sql.Tx) error {
+		// Delete from the queue in the transaction
+		results, err := tx.Exec("DELETE FROM items WHERE id = $1 and claim = $2", id, this.uuid)
 		if err != nil {
 			return err
 		}
@@ -101,12 +87,20 @@ func (this *Worker) generateMutateTransaction(id uuid.UUID) func(*sql.Tx, error)
 func (this *Worker) startWork() {
 	payload := []byte{}
 	id := uuid.UUID{}
-	err := this.db.QueryRow("UPDATE items SET claim = $1 WHERE claim IS NULL ORDER BY added_at ASC LIMIT 1 RETURNING payload, id", this.uuid).Scan(&payload, &id)
+	attempt, numRetries := 0, 0
+	err := this.db.QueryRow("UPDATE items SET claim = $1 WHERE claim IS NULL ORDER BY added_at ASC LIMIT 1 RETURNING payload, id, attempt, num_retries", this.uuid).Scan(&payload, &id, &attempt, &numRetries)
 	if err != nil {
 		return
 	}
 
-	this.callback(context.Background(), payload, this.generateMutateTransaction(id))
+	callbackError := this.callback(context.Background(), payload, this.generateMutateTransaction(id))
+	// Non-retryable error or we have reached max number of retries; remove from the queue.
+	if callbackError != nil && (!callbackError.Retryable() || numRetries-1 == attempt) {
+		_, err = this.db.Exec("DELETE FROM items WHERE id = $1 and claim = $2", id, this.uuid)
+	}
+	if callbackError != nil && callbackError.Retryable() {
+		_, err = this.db.Exec("UPDATE items SET (claim, added_at, attempt) = (NULL, now(), $1) WHERE id = $2 and claim = $3", attempt+1, id, this.uuid)
+	}
 }
 
 func (this *Worker) doWork() {
@@ -148,7 +142,7 @@ func (this *Worker) doHeartbeat() {
 	}
 }
 
-func New(callback func(context.Context, []byte, func(*sql.Tx, error) error), db *sql.DB, options *Options) (*Worker, error) {
+func New(callback func(context.Context, []byte, func(*sql.Tx) error) Error, db *sql.DB, options *Options) (*Worker, error) {
 	// Create a session
 
 	// Create a session, grab a UUID

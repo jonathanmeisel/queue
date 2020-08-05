@@ -27,13 +27,13 @@ func main() {
 		log.Fatal("error connecting to the database: ", err)
 	}
 
-	_, err = worker.New(func(_ context.Context, payload []byte, updateTransaction func(*sql.Tx, error) error) {
+	_, err = worker.New(func(_ context.Context, payload []byte, updateTransaction func(*sql.Tx) error) worker.Error {
 		fmt.Println(string(payload))
 		err = crdb.ExecuteTx(context.Background(), db, nil, func(tx *sql.Tx) error {
-			updateTransaction(tx, nil)
+			updateTransaction(tx)
 			return nil
 		})
-
+		return nil
 	}, db, worker.NewOptions())
 	<-quit
 }
